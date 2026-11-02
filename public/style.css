@@ -13,3 +13,5 @@ body{background:#0a0e18}.sidebar{background:#0c121f}.brand-icon{color:white;back
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 
 .mini-task-description{display:block;white-space:pre-wrap;font-size:11px;line-height:1.7;color:var(--muted);margin-top:6px}.avatar{cursor:pointer}
+
+.status-diagnostic{display:block;max-width:300px;font-size:10px;line-height:1.6;margin-top:7px;color:var(--muted)}

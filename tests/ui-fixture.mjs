@@ -7,7 +7,7 @@ import { once } from 'node:events';
 import https from 'node:https';
 import { hash,seal } from '../lib/security.mjs';
 const dir=resolve('test-results/ui'); mkdirSync(dir,{recursive:true});
-const env={...process.env,DATA_DIR:dir,HOST:'127.0.0.1',PORT:'3300',PROXY_PORT_START:'8300',PROXY_PORT_END:'8399',LAB_DEMO:'1'};
+const env={...process.env,DATA_DIR:dir,HOST:process.env.LAB_PREVIEW_HOST || '127.0.0.1',PORT:'3300',PROXY_PORT_START:'8300',PROXY_PORT_END:'8399',LAB_DEMO:'1'};
 const launch=()=>spawn(process.execPath,['server.mjs'],{env,stdio:['ignore','pipe','inherit']});
 let child=launch(); await once(child.stdout,'data'); child.kill(); await once(child,'exit');
 const db=new DatabaseSync(resolve(dir,'lab.sqlite')),key=readFileSync(resolve(dir,'secret.key'));
@@ -22,8 +22,13 @@ const tasks=[['Explore your Proxmox node','Locate CPU, memory, storage, and netw
 tasks.forEach(([title,description],i)=>db.prepare('INSERT INTO tasks VALUES (?,?,?,?,?)').run('task-'+i,title,description,i,1));db.close();
 const fixture=https.createServer({key:readFileSync(new URL('fixtures/key.pem',import.meta.url)),cert:readFileSync(new URL('fixtures/cert.pem',import.meta.url))},(req,res)=>{
   if(req.url==='/api2/json/version'){res.writeHead(200,{'Content-Type':'application/json'});return res.end('{"data":{"version":"test"}}');}
+  if(req.url==='/api2/json/browser-auth') { const valid=(req.headers.cookie || '').includes('PVEAuthCookie=test-ticket');res.writeHead(valid?200:401,{'Content-Type':'application/json'});return res.end(JSON.stringify({authenticated:valid})); }
   res.writeHead(200,{'Content-Type':'text/html','X-Frame-Options':'SAMEORIGIN'});
-  res.end('<!doctype html><html><head><title>Simulated PVE</title><style>body{background:#181818;color:#ddd;font:15px monospace;padding:25px}textarea{display:block;width:95%;height:55vh;background:#080808;color:#a7df8c;border:1px solid #555;padding:15px;font:15px monospace}</style></head><body><h1>Simulated PVE management interface</h1><p>This local QA fixture is not a real Proxmox server.</p><label>Terminal input (text is never executed)<textarea aria-label="Simulated terminal" spellcheck="false">root@pve-student-01:~# </textarea></label></body></html>');
+  res.end(`<!doctype html><html><head><title>Simulated PVE</title><style>body{background:#181818;color:#ddd;font:15px monospace;padding:25px}textarea{display:block;width:95%;height:45vh;background:#080808;color:#a7df8c;border:1px solid #555;padding:15px;font:15px monospace}button{padding:10px;margin:10px}</style></head><body><h1>Simulated PVE management interface</h1><p>This local QA fixture is not a real Proxmox server.</p><button id="signin">Test HTTP login cookie</button><button id="signout">Test logout cookie</button><p id="auth-result">No test session yet</p><script>
+  async function check(){const r=await fetch('/api2/json/browser-auth');document.getElementById('auth-result').textContent=r.ok?'Authenticated: browser cookie reached PVE':'Unauthorized: no session cookie';}
+  document.getElementById('signin').onclick=()=>{document.cookie='PVEAuthCookie=test-ticket; Path=/; Secure; SameSite=Lax';check();};
+  document.getElementById('signout').onclick=()=>{document.cookie='PVEAuthCookie=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Secure; SameSite=Lax';check();};
+  </script><label>Terminal input (text is never executed)<textarea aria-label="Simulated terminal" spellcheck="false">root@pve-student-01:~# </textarea></label></body></html>`);
 });
 fixture.listen(8006,'127.0.0.1');await once(fixture,'listening');
 child=launch();child.stdout.pipe(process.stdout);

@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID, randomBytes } from 'node:crypto';
 import { hash, verify, seal, unseal, random, cookies, validAddress, grantToken, validGrant, Limiter } from './lib/security.mjs';
 import { createNodeProxy } from './lib/proxy.mjs';
+import { checkManagement } from './lib/status.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 if (process.platform !== 'win32') process.umask(0o077);
@@ -18,11 +19,13 @@ const key = readFileSync(keyPath);
 const PORT = Number(process.env.PORT || 3000), HOST = process.env.HOST || '0.0.0.0';
 const PROXY_START = Number(process.env.PROXY_PORT_START || 8100), PROXY_END = Number(process.env.PROXY_PORT_END || 8199);
 const INTERVAL = Math.max(2000, Number(process.env.STATUS_INTERVAL_MS || 5000));
+const STATUS_TIMEOUT = Number(process.env.STATUS_TIMEOUT_MS || 5000);
 for (const [name,value] of [['PORT',PORT],['PROXY_PORT_START',PROXY_START],['PROXY_PORT_END',PROXY_END]]) {
   if (!Number.isInteger(value)||value<1||value>65535) throw new Error(`${name} must be a port between 1 and 65535.`);
 }
 if (PROXY_START>PROXY_END) throw new Error('PROXY_PORT_START must not exceed PROXY_PORT_END.');
 if (!Number.isFinite(INTERVAL)) throw new Error('STATUS_INTERVAL_MS must be a finite number.');
+if (!Number.isFinite(STATUS_TIMEOUT)||STATUS_TIMEOUT<500||STATUS_TIMEOUT>60000) throw new Error('STATUS_TIMEOUT_MS must be between 500 and 60000.');
 // Optional bootstrap token supports Docker/remote setup without trusting a forwarded client IP.
 const tls = process.env.TLS_CERT && process.env.TLS_KEY ? { cert: readFileSync(process.env.TLS_CERT), key: readFileSync(process.env.TLS_KEY) } : null;
 if (!!process.env.TLS_CERT !== !!process.env.TLS_KEY) throw new Error('Set both TLS_CERT and TLS_KEY.');
@@ -92,13 +95,9 @@ async function startProxy(row) {
 }
 function stopProxy(id) { const proxy = proxies.get(id); if (proxy) { proxy.closeAllConnections(); proxy.close(); proxies.delete(id); } proxyErrors.delete(id); }
 async function probe(row) {
-  const start = Date.now();
-  const up = await new Promise(resolve => {
-    const req = https.get({ hostname:row.ip, port:8006, path:'/api2/json/version', rejectUnauthorized:!row.allow_self_signed, timeout:2500 }, res => { res.resume(); resolve(res.statusCode >= 200 && res.statusCode < 500); });
-    req.on('timeout', () => req.destroy()); req.on('error', () => resolve(false));
-  });
+  const result=await checkManagement(row,STATUS_TIMEOUT);
   if (getRow(row.id)?.revision !== row.revision) return;
-  states.set(row.id, { status:up ? 'up' : 'down', checkedAt:new Date().toISOString(), latency:up ? Date.now()-start : null });
+  states.set(row.id,result);
 }
 let probing = false;
 async function probeAll() {
