@@ -1,0 +1,8 @@
+.git
+data
+test-results
+tests
+certs
+.env
+*.log
+.runtime

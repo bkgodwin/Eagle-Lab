@@ -1,0 +1,6 @@
+data/
+.env
+certs/
+test-results/
+*.log
+.runtime/
