@@ -1,0 +1,13 @@
+services:
+  portal:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+      - "8100-8199:8100-8199"
+    environment:
+      SETUP_TOKEN: ${SETUP_TOKEN:?Set SETUP_TOKEN in your shell before the first launch}
+    volumes:
+      - lab-data:/app/data
+volumes:
+  lab-data:

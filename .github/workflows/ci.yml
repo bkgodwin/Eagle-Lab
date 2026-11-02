@@ -1,0 +1,21 @@
+name: Eagle-Lab checks
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  ubuntu-lxc-runtime:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ubuntu: ['22.04', '24.04']
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install on clean Ubuntu and run full integration suite
+        run: |
+          docker run --rm -v "$PWD:/app" -w /app ubuntu:${{ matrix.ubuntu }} sh -c '
+            ./start.sh --check &&
+            .runtime/node/bin/node --test tests/*.test.mjs
+          '
