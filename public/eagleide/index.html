@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Eagle-Lab · EagleIDE tool</title><link rel="stylesheet" href="style.css"><script type="module" src="app.js"></script></head>
+<body><main>
+<header><div><p class="eyebrow">EAGLE-LAB / CLASSROOM RESOURCES</p><h1>Your lab, at a glance.</h1><p class="muted">Server status, lab tasks, and a command reference for your workspace.</p></div><span class="badge">EagleIDE · Read only</span></header>
+<nav aria-label="Lab resources"><button data-view="servers" aria-pressed="true">Lab servers</button><button data-view="tasks" aria-pressed="false">Lab tasks</button><button data-view="reference" aria-pressed="false">Command reference</button></nav>
+<p id="connection" role="status">Loading classroom data…</p>
+<section id="view" aria-live="polite"></section>
+<aside class="boundary"><strong>Connect through the full lab portal.</strong><p>This view fits EagleIDE’s restricted sandbox. PVE login and live VM consoles run in the full portal outside this tool.</p><label for="portal-url">Full portal address</label><input id="portal-url" readonly value="Loading…"><small>Copy this address into a separate browser tab. Popups opened from the tool inherit its sandbox.</small></aside>
+<footer>Eagle-Lab · Learn by doing.</footer>
+</main></body></html>
