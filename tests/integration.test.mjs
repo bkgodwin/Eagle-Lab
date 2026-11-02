@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, stat } from 'node:fs/promises';
 import { tmpdir, networkInterfaces } from 'node:os';
 import { join } from 'node:path';
 import net from 'node:net';
@@ -144,4 +144,24 @@ test('HTTPS serves the portal with secure session cookies and clipboard policy',
   assert.equal((await request('/api/login',{username:'teacher',password:'test-https-password-123'})).status,200);
   assert.ok(setup.headers['permissions-policy'].includes('clipboard-read'));
   assert.ok(setup.headers['content-security-policy'].includes('frame-src https:'));
+});
+
+test('Headless Ubuntu hosting supports one-time remote administrator setup', {timeout:15000}, async t=>{
+  const data=await mkdtemp(join(tmpdir(),'eagle-lab-setup-')),port=await freePort();
+  const ip=Object.values(networkInterfaces()).flat().find(v=>v.family==='IPv4'&&validAddress(v.address))?.address;
+  assert.ok(ip,'A private LAN interface is required.');
+  const child=spawn(process.execPath,['server.mjs'],{cwd:new URL('..',import.meta.url),env:{...process.env,DATA_DIR:data,HOST:'0.0.0.0',PORT:String(port),AUTO_SETUP:'1',SETUP_TOKEN:''},stdio:['ignore','pipe','pipe']});
+  t.after(async()=>{if(!child.killed){child.kill();await once(child,'exit').catch(()=>{});}await rm(data,{recursive:true,force:true});});
+  let output='';child.stdout.on('data',v=>output+=v);child.stderr.on('data',v=>output+=v);
+  for(let i=0;i<100&&!output.includes('Remote setup token:');i++){if(child.exitCode!==null)throw Error('Setup server exited early.');await delay(50);}
+  const token=await readFile(join(data,'setup-token.txt'),'utf8');assert.equal(token.length,64);
+  if(process.platform!=='win32') assert.equal((await stat(join(data,'setup-token.txt'))).mode & 0o777,0o600);
+  const base=`http://${ip}:${port}`;
+  const bootstrap=await(await fetch(base+'/api/bootstrap')).json();
+  assert.equal(bootstrap.local,false);assert.equal(bootstrap.remoteSetup,true);assert.ok(!JSON.stringify(bootstrap).includes(token));
+  const setup=token=>fetch(base+'/api/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:'teacher',password:'test-remote-password-123',token})});
+  assert.equal((await setup('wrong-token')).status,403);
+  assert.equal((await setup(token)).status,201);
+  await assert.rejects(readFile(join(data,'setup-token.txt')),{code:'ENOENT'});
+  assert.equal((await(await fetch(base+'/api/bootstrap')).json()).remoteSetup,false);
 });
