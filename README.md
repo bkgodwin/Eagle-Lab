@@ -65,6 +65,26 @@ Students open `http://YOUR-PORTAL-HOST-IP:3000` from the LAN. Keep the process r
 - Student task checkboxes saved locally in that browser. There is no student identity or central grading; editing a task resets its checkbox version.
 - SQLite persistence, encrypted PVE passwords, hashed admin passwords and PINs, HttpOnly cookies, mutation origin checks, bounded requests, and login/PIN/report rate limits.
 
+## EagleIDE external-tool integration
+
+Register the dedicated **read-only adapter**, rather than the full portal:
+
+```text
+Backend URL: http://EAGLE-LAB-LXC-IP:3000/eagleide/
+Launch path: /eagle-lab/
+HTTP methods: GET and HEAD only
+Send data to app server: off
+Forms, popups, dialogs, and account cloud storage: off
+```
+
+Keep the trailing slash on `/eagleide/`. Use your HTTPS backend URL instead if Eagle-Lab has TLS configured. In EagleIDE, save/retest the tool, verify the private preview, and approve it using the existing admin workflow. The Eagle-Lab container must already be allowed by EagleIDE's application-network policy; use a narrow application address/subnet rather than enabling a broad management network. No EagleIDE source or live configuration was changed by this update.
+
+The adapter provides a searchable public server list, task instructions, key terms, and Linux/PVE command reference. It uses prefix-relative HTML/CSS/JS resources and finite JSON polling, and requires no cookies, login, browser storage, forms, SSE, WebSockets, nested frames, or server-write permission. It never returns PVE passwords, per-server notes, PIN hashes, or admin controls. Set `PUBLIC_URL=http://YOUR-LAB-HOST:3000/` in `.env` to display the browser-accessible full portal address, especially when EagleIDE reaches the backend using an internal address or alias. Students can copy that address into a separate tab for PVE access.
+
+**Nested PVE management/console frames cannot run inside EagleIDE's existing external-tool profile.** EagleIDE enforces an opaque-origin sandbox and `frame-src 'none'`, rejects cookie/login flows, and does not proxy WebSocket upgrades or SSE. A child application cannot relax its parent's CSP or sandbox. Opening a popup from the tool also inherits those restrictions. The full portal remains protected against unrelated embedding and is intentionally separate from the adapter.
+
+This compatibility boundary was checked against [EagleIDE's gateway](https://github.com/bkgodwin/EagleIDE/blob/main/external_tools.py), [tool workspace](https://github.com/bkgodwin/EagleIDE/blob/main/static/js/external-tools.js), and [integration guide](https://github.com/bkgodwin/EagleIDE/blob/main/static/docs/external-tools.html). A browser contract fixture exercises the adapter under the same opaque sandbox and prefix-only policy, without changing a real EagleIDE deployment.
+
 ## LAN ports and proxy architecture
 
 The portal uses **TCP 3000** by default. Each enrolled node is assigned a dedicated **TCP proxy port in 8100–8199**. The first node uses 8100, the next uses 8101, and so on. Assignments persist across restarts and are visible in the admin table.
@@ -98,6 +118,14 @@ Then use `https://YOUR-CERTIFICATE-HOSTNAME:3000`. The certificate must cover th
 For **host shells and LXC text consoles**, choose **xterm.js** in Proxmox’s console menu. Use **Ctrl+Shift+C / Ctrl+Shift+V**, or **Cmd+C / Cmd+V** on macOS, and grant clipboard access if the browser requests it. The iframe explicitly allows clipboard read/write and fullscreen. The portal does not intercept terminal keystrokes or execute pasted commands.
 
 For **VM graphical consoles**, copy/paste depends on Proxmox/noVNC and guest configuration. Use the noVNC clipboard panel when supported. For a reliable text workflow, configure a VM serial console and use xterm.js, or use SSH. Merely placing a graphical console in an iframe cannot add clipboard integration to a guest that lacks it.
+
+### Nested VM console transport
+
+In the full standalone Eagle-Lab workspace, PVE's VM Console tab creates another iframe within the proxied management iframe. The proxy's frame policy permits both the portal origin and the node proxy's own origin, so that ancestor chain is supported.
+
+Proxmox's patched noVNC defaults to encrypted WebSockets (`encrypt=true`) even on an HTTP page. That can make an HTTP Eagle-Lab node port receive an incompatible `wss://` connection. The compatibility script now corrects **only same-node PVE VNC/terminal WebSocket URLs on an HTTP page** to use `ws://`. HTTPS pages, other hosts, and unrelated WebSocket paths are unchanged; upstream traffic to PVE remains HTTPS. VNC ticket query strings, the PVE session cookie, and the `binary` WebSocket subprotocol are preserved. Upgrade rejection statuses are returned accurately instead of becoming an unexplained 502. This is based on [Proxmox's noVNC patch](https://git.proxmox.com/?p=novnc-pve.git;a=blob;f=debian/patches/0001-add-PVE-specific-JS-code.patch;hb=HEAD).
+
+After updating, restart Eagle-Lab and reload/reopen the management frame and console. The browser fixture verifies portal → management frame → nested console → binary WebSocket → RFB greeting using a synthetic PVE endpoint. Real guest display and authentication still require verification against the deployed PVE node. This change cannot override EagleIDE's outer `frame-src 'none'` policy.
 
 HTTP works for basic local use and manual copy fallback, but browser clipboard APIs on a LAN address usually require HTTPS. Browser behavior varies; real PVE console interaction needs a check with your deployed PVE version and students’ browsers.
 
@@ -141,6 +169,7 @@ Environment variables are read at startup. `start.sh` loads `.env` automatically
 | `TLS_CERT` / `TLS_KEY` | unset | PEM certificate and key. Both are required for HTTPS. |
 | `SETUP_TOKEN` | unset | Allows remote first-time setup when the supplied token matches. |
 | `AUTO_SETUP` | unset; `1` in start.sh | Generates a persistent first-run remote token if no admin or explicit token exists. |
+| `PUBLIC_URL` | inferred from request | Browser-accessible full portal origin displayed by `/eagleide/`. HTTP(S), no credentials/query/path. |
 
 Initial setup is restricted to requests from loopback unless `SETUP_TOKEN` is configured. This avoids an unconfigured portal being claimed by another LAN visitor. For a remote host, set a long random token in its environment, open the portal, click instructor sign in, and supply the token along with your chosen credentials. Remove the token from the environment after setup. A configured administrator prevents setup from running again.
 
@@ -184,3 +213,5 @@ The suite checks scrypt hashing, authenticated credential encryption, grant tamp
 Browser QA covers the local responsive portal. A real PVE server and its credentials were not supplied during implementation, so authentic PVE login, graphical VM clipboard integration, and student-to-host firewall reachability remain deployment checks.
 
 GitHub Actions runs the startup script and the integration suite in clean Ubuntu 22.04 and 24.04 containers. This exercises native Linux dependency installation and execution; an actual school's PVE/LXC network and browser trust remain site-specific checks. The bundled datacenter background is served locally; see [image attribution](ASSETS.md).
+
+For manual browser QA, `node tests/ui-fixture.mjs` starts a disposable portal at port 3300, a synthetic PVE HTTPS service at port 8006, and a restricted EagleIDE gateway contract fixture at port 3400. All records and test-only credentials are isolated under ignored `test-results/ui`. The fixture's nested-console button tests an RFB greeting over the real WebSocket path; it does not create or access an actual VM. Stop it before running integration tests because both use a local test listener on port 8006.

@@ -23,7 +23,7 @@ test('Classroom workflow, access control, durable records, HTTP proxy and termin
   const cert=await readFile(new URL('fixtures/cert.pem',import.meta.url)), key=await readFile(new URL('fixtures/key.pem',import.meta.url));
   const localIp=Object.values(networkInterfaces()).flat().find(v=>v.family==='IPv4'&&validAddress(v.address))?.address;
   assert.ok(localIp,'A private LAN interface is required for the PVE fixture.');
-  let upstreamCookie='', websocketOrigin='', reachable=true,hangProbe=false;
+  let upstreamCookie='', websocketOrigin='',websocketPath='',websocketCookie='', reachable=true,hangProbe=false;
   upstream=https.createServer({cert,key},(req,res)=>{
     if(req.url==='/compressed-ui') { res.writeHead(200,{'Content-Type':'text/html','Content-Encoding':'gzip'});return res.end(gzipSync('<html><head><title>PVE</title></head><body><script>document.cookie="PVEAuthCookie=ticket; Secure"</script></body></html>')); }
     if(req.url==='/api2/json/version') { if(hangProbe) return;res.writeHead(reachable?401:503,{'Content-Type':'application/json'}); return res.end('{"data":null}'); }
@@ -34,8 +34,10 @@ test('Classroom workflow, access control, durable records, HTTP proxy and termin
   const upstreamSockets=new Set(); upstream.on('connection',s=>{upstreamSockets.add(s);s.on('close',()=>upstreamSockets.delete(s));});
   upstream.on('upgrade',(req,socket)=>{
     websocketOrigin=req.headers.origin;
+    websocketPath=req.url;websocketCookie=req.headers.cookie;
+    if(req.url==='/denied'){socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');return;}
     const accept=createHash('sha1').update(req.headers['sec-websocket-key']+'258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
-    socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
+    socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n${req.headers['sec-websocket-protocol']==='binary'?'Sec-WebSocket-Protocol: binary\r\n':''}\r\n`);
     socket.on('data',chunk=>socket.write(chunk)); socket.on('error',()=>{});
   });
   upstream.listen(8006,'0.0.0.0'); await once(upstream,'listening');
@@ -75,6 +77,16 @@ test('Classroom workflow, access control, durable records, HTTP proxy and termin
   assert.equal((await request(`/api/servers/${id}`)).status,403);
   const publicData=(await request('/api/bootstrap')).body;
   assert.equal(publicData.servers[0].password,undefined); assert.equal(publicData.servers[0].notes,undefined); assert.equal(publicData.servers[0].pin_hash,undefined);
+  const tool=await fetch(base+'/eagleide/');assert.equal(tool.status,200);
+  assert.equal(tool.headers.get('x-frame-options'),null);assert.equal(tool.headers.get('content-security-policy'),null);assert.equal(tool.headers.get('set-cookie'),null);
+  const toolHtml=await tool.text();assert.ok(toolHtml.includes('src="app.js"'));assert.ok(!toolHtml.includes('<iframe'));assert.ok(!toolHtml.includes('src="/'));
+  const toolDataResponse=await fetch(base+'/eagleide/data');const toolData=await toolDataResponse.json();
+  assert.equal(toolDataResponse.headers.get('set-cookie'),null);assert.equal(toolData.servers[0].protected,true);
+  assert.ok(!JSON.stringify(toolData).includes('fake-root-password'));assert.ok(!JSON.stringify(toolData).includes('Lab network notes'));
+  assert.equal(toolData.portalUrl,base+'/');
+  for(const asset of ['app.js','style.css','reference.js'])assert.equal((await fetch(base+'/eagleide/'+asset)).status,200);
+  assert.equal((await request('/eagleide/data','POST',{})).status,405);
+  const fullPortal=await fetch(base+'/');assert.equal(fullPortal.headers.get('x-frame-options'),'DENY');assert.ok(fullPortal.headers.get('content-security-policy').includes("frame-ancestors 'none'"));
   assert.equal((await request(`/api/servers/${id}/unlock`,'POST',{pin:'0000'})).status,403);
   const unlock=await request(`/api/servers/${id}/unlock`,'POST',{pin:' 1234 '}); const student=unlock.cookie;
   const details=await request(`/api/servers/${id}`,'GET',undefined,student);
@@ -100,12 +112,17 @@ test('Classroom workflow, access control, durable records, HTTP proxy and termin
   assert.equal(upstreamCookie,'PVEAuthCookie=my-pve-ticket');
   const background=await fetch(base+'/assets/datacenter.jpg');assert.equal(background.status,200);assert.equal(background.headers.get('content-type'),'image/jpeg');
   assert.ok((await background.arrayBuffer()).byteLength>10000);
+  const vncPath='/api2/json/nodes/pve/qemu/100/vncwebsocket?port=5900&vncticket=PVEVNC%3Atest%2Bticket%3D';
   const socket=await new Promise((resolve,reject)=>{
-    const req=http.request(proxyBase,{headers:{Connection:'Upgrade',Upgrade:'websocket','Sec-WebSocket-Version':'13','Sec-WebSocket-Key':'dGhlIHNhbXBsZSBub25jZQ==',Cookie:student,Origin:proxyBase}});
-    req.on('upgrade',(_res,s)=>resolve(s)); req.on('error',reject); req.on('response',res=>reject(Error(`Upgrade failed: ${res.statusCode}`))); req.end();
+    const req=http.request(proxyBase+vncPath,{headers:{Connection:'Upgrade',Upgrade:'websocket','Sec-WebSocket-Version':'13','Sec-WebSocket-Key':'dGhlIHNhbXBsZSBub25jZQ==','Sec-WebSocket-Protocol':'binary',Cookie:`${student}; ${name}=my-pve-ticket`,Origin:proxyBase}});
+    req.on('upgrade',(res,s)=>{assert.equal(res.headers['sec-websocket-protocol'],'binary');resolve(s);}); req.on('error',reject); req.on('response',res=>reject(Error(`Upgrade failed: ${res.statusCode}`))); req.end();
   });
   socket.write(Buffer.from([0,1,2,255])); const [echo]=await once(socket,'data'); assert.deepEqual(echo,Buffer.from([0,1,2,255]));
   assert.equal(websocketOrigin,`https://${localIp}:8006`);
+  assert.equal(websocketPath,vncPath);assert.equal(websocketCookie,'PVEAuthCookie=my-pve-ticket');
+  const rejectedUpgrade=await new Promise((resolve,reject)=>{const req=http.request(proxyBase+'/denied',{headers:{Connection:'Upgrade',Upgrade:'websocket','Sec-WebSocket-Version':'13','Sec-WebSocket-Key':'dGhlIHNhbXBsZSBub25jZQ==',Cookie:student,Origin:proxyBase}},res=>{res.resume();resolve(res.statusCode);});req.on('error',reject);req.end();});
+  assert.equal(rejectedUpgrade,401);
+  const nested=await fetch(proxyBase+'/?console=kvm&novnc=1&vmid=100',{headers:{Cookie:student}});assert.equal(nested.headers.get('x-frame-options'),null);assert.ok(nested.headers.get('content-security-policy').includes("'self'"));assert.ok(nested.headers.get('content-security-policy').includes(base));
   const ticket=await request(`/api/servers/${id}/tickets`,'POST',{subject:'Container failed',message:'Synthetic issue for integration test',name:'Test student'},student); assert.equal(ticket.status,201);
   assert.equal((await request('/api/admin/tickets')).status,401);
   assert.equal((await request(`/api/admin/tickets/${ticket.body.id}`,'PATCH',{status:'closed'},admin)).status,200);

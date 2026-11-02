@@ -26,6 +26,12 @@ for (const [name,value] of [['PORT',PORT],['PROXY_PORT_START',PROXY_START],['PRO
 if (PROXY_START>PROXY_END) throw new Error('PROXY_PORT_START must not exceed PROXY_PORT_END.');
 if (!Number.isFinite(INTERVAL)) throw new Error('STATUS_INTERVAL_MS must be a finite number.');
 if (!Number.isFinite(STATUS_TIMEOUT)||STATUS_TIMEOUT<500||STATUS_TIMEOUT>60000) throw new Error('STATUS_TIMEOUT_MS must be between 500 and 60000.');
+let publicUrl='';
+if(process.env.PUBLIC_URL){
+  const value=new URL(process.env.PUBLIC_URL);
+  if(!['http:','https:'].includes(value.protocol)||value.username||value.password||value.pathname!=='/'||value.search||value.hash) throw new Error('PUBLIC_URL must be an HTTP(S) origin without credentials, query, or path.');
+  publicUrl=value.origin+'/';
+}
 // Optional bootstrap token supports Docker/remote setup without trusting a forwarded client IP.
 const tls = process.env.TLS_CERT && process.env.TLS_KEY ? { cert: readFileSync(process.env.TLS_CERT), key: readFileSync(process.env.TLS_KEY) } : null;
 if (!!process.env.TLS_CERT !== !!process.env.TLS_KEY) throw new Error('Set both TLS_CERT and TLS_KEY.');
@@ -106,6 +112,8 @@ async function probeAll() {
   finally { probing = false; }
 }
 const files = new Map(['index.html','app.js','style.css','reference.js','assets/datacenter.jpg'].map(name => [name, readFileSync(join(ROOT,'public',name))]));
+const toolFiles=new Map(['index.html','app.js','style.css'].map(name=>[name,readFileSync(join(ROOT,'public','eagleide',name))]));
+toolFiles.set('reference.js',files.get('reference.js'));
 async function handle(req,res) {
   res.setHeader('X-Content-Type-Options','nosniff'); res.setHeader('Referrer-Policy','no-referrer');
   res.setHeader('X-Frame-Options','DENY');
@@ -117,6 +125,25 @@ async function handle(req,res) {
       const origin = req.headers.origin;
       if (origin && origin !== `${tls ? 'https' : 'http'}://${req.headers.host}`) fail(403,'Request origin rejected.');
       if (!req.headers['content-type']?.startsWith('application/json')) fail(415,'JSON content type required.');
+    }
+    // EagleIDE's restricted gateway forbids cookies, nested frames, root-only assets,
+    // and live connections. Only this public, read-only adapter fits that profile.
+    if(path==='/eagleide'&&['GET','HEAD'].includes(req.method)){res.writeHead(302,{Location:'/eagleide/'});return res.end();}
+    if(path.startsWith('/eagleide/')){
+      if(!['GET','HEAD'].includes(req.method))fail(405,'The EagleIDE tool is read-only.');
+      const name=path.slice('/eagleide/'.length)||'index.html';
+      if(name==='data'){
+        res.removeHeader('X-Frame-Options');res.removeHeader('Content-Security-Policy');
+        const portalUrl=publicUrl || `${tls?'https':'http'}://${req.headers.host}/`;
+        if(req.method==='HEAD'){res.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'});return res.end();}
+        return json(res,200,{servers:allRows().map(publicRow),tasks:tasks(),portalUrl});
+      }
+      const data=toolFiles.get(name);if(!data)fail(404,'Tool resource not found.');
+      // The gateway applies its own opaque sandbox and prefix-restricted CSP.
+      // Do not forward the main portal's DENY/self policy into this separate view.
+      res.removeHeader('X-Frame-Options');res.removeHeader('Content-Security-Policy');
+      res.writeHead(200,{'Content-Type':name.endsWith('.js')?'text/javascript; charset=utf-8':name.endsWith('.css')?'text/css; charset=utf-8':'text/html; charset=utf-8','Cache-Control':'no-store'});
+      return res.end(req.method==='HEAD'?undefined:data);
     }
     if (path === '/api/events' && req.method === 'GET') {
       if (streams.size >= 500) fail(503,'Too many live connections.');
