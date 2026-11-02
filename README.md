@@ -56,7 +56,7 @@ Students open `http://YOUR-PORTAL-HOST-IP:3000` from the LAN. Keep the process r
 ## What is included
 
 - A searchable server list with hostname, LAN IPv4 address, and Up/Down state. Reachable nodes have a green outline; unreachable nodes have a red outline.
-- Shared Server-Sent Events status feed. The portal checks each host’s HTTPS management endpoint on port 8006 every five seconds, with a 2.5-second timeout and bounded concurrency. “Up” means the management endpoint responds with HTTP 2xx–4xx; it does not indicate guest health or successful root authentication.
+- Shared Server-Sent Events status feed. The portal schedules checks of each host’s HTTPS management endpoint on port 8006 every five seconds, with a configurable five-second deadline and bounded concurrency. “Up” means the management endpoint responds with HTTP 2xx–4xx; it does not indicate guest health or successful root authentication. The server details and admin table show the last probe result, including certificate, route, refusal, timeout, or HTTP errors.
 - Server details with default username `root`, password reveal/copy, notes, and Connect.
 - Optional PINs, independently hashed per server. The admin can set, change, or remove a PIN at any time. Server edits reset unlock grants and close active proxied connections.
 - A full-screen management iframe with a thin exit/reference/tasks bar, a dismissible clipboard hint, and a task drawer. Reference opens in a separate tab.
@@ -101,6 +101,28 @@ For **VM graphical consoles**, copy/paste depends on Proxmox/noVNC and guest con
 
 HTTP works for basic local use and manual copy fallback, but browser clipboard APIs on a LAN address usually require HTTPS. Browser behavior varies; real PVE console interaction needs a check with your deployed PVE version and students’ browsers.
 
+### Connection error 401 / server appears offline
+
+These are separate checks. The portal must be able to contact PVE from **inside its hosting LXC**; your laptop reaching PVE does not prove that the LXC has the same routing or firewall access.
+
+Earlier versions did not account for Proxmox setting its login cookie with `Secure` in browser JavaScript. On an ordinary HTTP LAN address, the browser rejects that cookie and subsequent PVE API calls receive 401. The proxy now injects a node-specific cookie compatibility script before the PVE page scripts. It handles login, renewal, and logout for that PVE cookie, keeps cookies namespaced, and preserves `Secure` when the portal uses HTTPS. Upstream connections to PVE always use HTTPS. No passwords or PVE authentication checks are bypassed.
+
+After updating, restart Eagle-Lab, close the old embedded workspace, reload the portal, reconnect, and sign in to PVE again. This does not implement automatic root login: enter the displayed PVE credentials and choose the Linux PAM realm for root. Proxied management scripts use `no-store` so fixes are not held in a stale browser asset cache.
+
+For an offline node, read the diagnostic in its details or in **Manage servers**:
+
+- **HTTP 401/403; sign-in required** means the node is reachable and is shown **Up**. Anonymous version probes normally do not have a login ticket.
+- **TLS certificate validation failed** means the saved certificate policy rejected the node's certificate, including a self-signed chain, expired certificate, or hostname mismatch. Configure the node's certificate trust option to match your lab, or install a trusted certificate/CA.
+- **Connection refused / no network route / timed out** means the LXC could not reach the saved IP on HTTPS port 8006. Check the saved IP, LXC bridge/VLAN/routing, and PVE/container firewall rules.
+
+To separate connectivity from certificate validation, run from the Eagle-Lab LXC, replacing `192.168.1.10` with the enrolled PVE IP:
+
+```sh
+curl -k -sS --connect-timeout 5 --max-time 8 -o /dev/null -w 'HTTP %{http_code}\n' https://192.168.1.10:8006/api2/json/version
+```
+
+HTTP 200, 401, or 403 proves an HTTPS response was received. A timeout/refusal indicates a network or service problem. Repeat without `-k` to test certificate trust. `-k` is for this diagnostic only; it does not change portal settings.
+
 Official references: [Proxmox administration guide](https://pve.proxmox.com/pve-docs/pve-admin-guide.html), [serial terminals](https://pve.proxmox.com/wiki/Serial_Terminal), [VM displays and VNC clipboard](https://pve.proxmox.com/pve-docs/chapter-qm.html#qm_display), [PVE API proxy](https://pve.proxmox.com/pve-docs/pveproxy.8.html).
 
 ## Configuration
@@ -115,6 +137,7 @@ Environment variables are read at startup. `start.sh` loads `.env` automatically
 | `PROXY_PORT_START` | `8100` | First per-node listener port. |
 | `PROXY_PORT_END` | `8199` | Last per-node listener port. |
 | `STATUS_INTERVAL_MS` | `5000` | Probe cadence; minimum 2000 ms. |
+| `STATUS_TIMEOUT_MS` | `5000` | End-to-end probe deadline, including TCP/TLS setup; 500–60000 ms. |
 | `TLS_CERT` / `TLS_KEY` | unset | PEM certificate and key. Both are required for HTTPS. |
 | `SETUP_TOKEN` | unset | Allows remote first-time setup when the supplied token matches. |
 | `AUTO_SETUP` | unset; `1` in start.sh | Generates a persistent first-run remote token if no admin or explicit token exists. |

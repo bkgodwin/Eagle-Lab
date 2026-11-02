@@ -11,6 +11,8 @@ import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { validAddress } from '../lib/security.mjs';
+import { checkManagement } from '../lib/status.mjs';
+import { gzipSync } from 'node:zlib';
 
 async function freePort() { const s=net.createServer(); s.listen(0,'127.0.0.1'); await once(s,'listening'); const port=s.address().port; await new Promise(r=>s.close(r)); return port; }
 const delay=ms=>new Promise(r=>setTimeout(r,ms));
@@ -21,9 +23,10 @@ test('Classroom workflow, access control, durable records, HTTP proxy and termin
   const cert=await readFile(new URL('fixtures/cert.pem',import.meta.url)), key=await readFile(new URL('fixtures/key.pem',import.meta.url));
   const localIp=Object.values(networkInterfaces()).flat().find(v=>v.family==='IPv4'&&validAddress(v.address))?.address;
   assert.ok(localIp,'A private LAN interface is required for the PVE fixture.');
-  let upstreamCookie='', websocketOrigin='', reachable=true;
+  let upstreamCookie='', websocketOrigin='', reachable=true,hangProbe=false;
   upstream=https.createServer({cert,key},(req,res)=>{
-    if(req.url==='/api2/json/version') { res.writeHead(reachable?200:503,{'Content-Type':'application/json'}); return res.end('{"data":{"version":"test"}}'); }
+    if(req.url==='/compressed-ui') { res.writeHead(200,{'Content-Type':'text/html','Content-Encoding':'gzip'});return res.end(gzipSync('<html><head><title>PVE</title></head><body><script>document.cookie="PVEAuthCookie=ticket; Secure"</script></body></html>')); }
+    if(req.url==='/api2/json/version') { if(hangProbe) return;res.writeHead(reachable?401:503,{'Content-Type':'application/json'}); return res.end('{"data":null}'); }
     upstreamCookie=req.headers.cookie || '';
     res.writeHead(200,{'Content-Type':'text/html','X-Frame-Options':'SAMEORIGIN','Content-Security-Policy':"frame-ancestors 'self'",'Set-Cookie':'PVEAuthCookie=fake-pve-ticket; Path=/; Secure; HttpOnly'});
     res.end('<html><body><script>document.cookie="PVEAuthCookie=fake"</script>Mock PVE</body></html>');
@@ -36,6 +39,10 @@ test('Classroom workflow, access control, durable records, HTTP proxy and termin
     socket.on('data',chunk=>socket.write(chunk)); socket.on('error',()=>{});
   });
   upstream.listen(8006,'0.0.0.0'); await once(upstream,'listening');
+  const certificateFailure=await checkManagement({ip:localIp,allow_self_signed:0});
+  assert.equal(certificateFailure.status,'down');assert.match(certificateFailure.statusReason,/certificate validation failed/);
+  hangProbe=true;const timedOut=await checkManagement({ip:localIp,allow_self_signed:1},500);hangProbe=false;
+  assert.equal(timedOut.status,'down');assert.match(timedOut.statusReason,/timed out after 0.5 seconds/);
   const start=async()=>{
     child=spawn(process.execPath,['server.mjs'],{cwd:new URL('..',import.meta.url),env:{...process.env,DATA_DIR:data,HOST:'127.0.0.1',PORT:String(port),PROXY_PORT_START:String(proxyPort),PROXY_PORT_END:String(proxyPort+10),STATUS_INTERVAL_MS:'2000'},stdio:['ignore','pipe','pipe']});
     let output=''; child.stdout.on('data',v=>output+=v); child.stderr.on('data',v=>output+=v);
@@ -81,6 +88,14 @@ test('Classroom workflow, access control, durable records, HTTP proxy and termin
   assert.ok(proxied.headers.get('content-security-policy').includes(`http://127.0.0.1:${port}`));
   const html=await proxied.text(),name=`PVEAuthCookie_${id.replaceAll('-','')}`;
   assert.ok(html.includes(name)); assert.ok(proxied.headers.get('set-cookie').includes(name)); assert.ok(!proxied.headers.get('set-cookie').includes('Secure'));
+  assert.ok(html.includes('/_eagle/cookie-bridge.js'));
+  const bridge=await fetch(proxyBase+'/_eagle/cookie-bridge.js',{headers:{Cookie:student}});
+  assert.equal(bridge.status,200);assert.ok((await bridge.text()).includes('const secure = false'));
+  assert.equal((await fetch(proxyBase+'/_eagle/cookie-bridge.js')).status,403);
+  const compressed=await fetch(proxyBase+'/compressed-ui',{headers:{Cookie:student}});
+  assert.equal(compressed.headers.get('content-encoding'),null);const decoded=await compressed.text();
+  assert.ok(decoded.indexOf('/_eagle/cookie-bridge.js')<decoded.indexOf('document.cookie'));
+  assert.ok(decoded.includes(name));
   await fetch(proxyBase,{headers:{Cookie:`${student}; ${name}=my-pve-ticket; PVEAuthCookie_other=wrong; lab_admin=secret`}});
   assert.equal(upstreamCookie,'PVEAuthCookie=my-pve-ticket');
   const background=await fetch(base+'/assets/datacenter.jpg');assert.equal(background.status,200);assert.equal(background.headers.get('content-type'),'image/jpeg');
@@ -102,6 +117,8 @@ test('Classroom workflow, access control, durable records, HTTP proxy and termin
   const eventResponse=await fetch(base+'/api/events'); eventsReader=eventResponse.body.getReader(); const first=await eventsReader.read(); assert.ok(new TextDecoder().decode(first.value).includes('data:'));
   for(let i=0;i<30;i++) { if((await request('/api/bootstrap')).body.servers[0].status==='up') break; await delay(100); }
   assert.equal((await request('/api/bootstrap')).body.servers[0].status,'up');
+  assert.equal((await request('/api/bootstrap')).body.servers[0].httpStatus,401);
+  assert.match((await request('/api/bootstrap')).body.servers[0].statusReason,/sign-in required/);
   reachable=false; await delay(2400); assert.equal((await request('/api/bootstrap')).body.servers[0].status,'down');
   const closed=once(socket,'close');
   await request(`/api/admin/servers/${id}`,'PUT',{hostname:'pve-student-01',ip:localIp,username:'root',notes:'Updated notes',pinAction:'set',pin:'5678'},admin);
